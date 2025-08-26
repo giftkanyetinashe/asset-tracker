@@ -1,0 +1,136 @@
+/* 
+ * PNP Asset Management - Dark Theme Stylesheet
+ */
+
+/* Universal settings for all widgets */
+* {
+    font-family: "Segoe UI", "Helvetica Neue", "Arial", sans-serif;
+    font-size: 10pt;
+    color: #e0e0e0; /* Light grey text for readability */
+}
+
+/* Main window and base widget styling */
+QMainWindow, QDialog, QWidget {
+    background-color: #2c3e50; /* Dark blue-grey background */
+}
+
+/* Tab styling */
+QTabWidget::pane {
+    border: 1px solid #1a242f;
+    border-top: none;
+}
+QTabBar::tab {
+    background-color: #34495e; /* Slightly lighter tab background */
+    color: #e0e0e0;
+    padding: 10px 20px;
+    border: 1px solid #1a242f;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+    background-color: #46637f; /* Active tab color */
+    font-weight: bold;
+    color: #ffffff;
+}
+QTabBar::tab:!selected:hover {
+    background-color: #4a6a8a;
+}
+
+/* Push Button styling */
+QPushButton {
+    background-color: #3498db; /* Bright blue for primary actions */
+    color: #ffffff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #5dade2; /* Lighter blue on hover */
+}
+QPushButton:pressed {
+    background-color: #2374a8; /* Darker blue when pressed */
+}
+/* Special styling for the Dispatch button */
+QPushButton#dispatch_button { /* Assuming you set objectName in code */
+    background-color: #e74c3c; /* Red for a potentially "final" action */
+}
+QPushButton#dispatch_button:hover {
+    background-color: #ec7063;
+}
+
+/* Input field styling (QLineEdit, QDateEdit) */
+QLineEdit, QDateEdit, QComboBox {
+    background-color: #1a242f; /* Very dark background for inputs */
+    border: 1px solid #34495e;
+    padding: 6px;
+    border-radius: 4px;
+    color: #e0e0e0;
+}
+QLineEdit:focus, QDateEdit:focus, QComboBox:focus {
+    border: 1px solid #3498db; /* Blue border when focused */
+}
+QComboBox::drop-down {
+    border: none;
+}
+
+/* Table Widget styling */
+QTableWidget {
+    background-color: #1a242f;
+    border: 1px solid #34495e;
+    gridline-color: #34495e; /* Grid lines match border color */
+}
+QHeaderView::section {
+    background-color: #34495e;
+    color: #ffffff;
+    padding: 6px;
+    border: 1px solid #1a242f;
+    font-weight: bold;
+}
+QTableWidget::item {
+    padding: 5px;
+}
+QTableWidget::item:selected {
+    background-color: #3498db; /* Blue selection color */
+    color: #ffffff;
+}
+QTableWidget::item:alternate {
+    background-color: #212f3c; /* Alternating row color */
+}
+
+/* Label styling */
+QLabel {
+    background-color: transparent; /* Labels should have no background */
+}
+/* Style for main title labels */
+QLabel[font-size="14pt"] { /* You can use properties as selectors */
+    color: #ffffff;
+    font-weight: bold;
+    padding-bottom: 10px;
+}
+
+/* Menu Bar styling */
+QMenuBar {
+    background-color: #34495e;
+}
+QMenuBar::item {
+    background: transparent;
+    padding: 4px 8px;
+}
+QMenuBar::item:selected {
+    background-color: #46637f;
+}
+QMenu {
+    background-color: #34495e;
+    border: 1px solid #1a242f;
+}
+QMenu::item:selected {
+    background-color: #46637f;
+}
+
+/* Status Bar styling */
+QStatusBar {
+    background-color: #2c3e50;
+    font-style: italic;
+}
