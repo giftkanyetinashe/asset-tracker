@@ -16,6 +16,18 @@ from PyQt6.QtGui import QPainter, QPixmap, QPen, QImage, QIcon
 from PyQt6.QtCore import Qt, QPoint, QDate
 from PyQt6 import uic
 
+
+# Helper function to find asset files for PyInstaller
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 # --- APPLICATION VERSION ---
 # Update this when you create a new release on GitHub
 APP_VERSION = "1.2.0" 
@@ -340,11 +352,11 @@ class ProductDetailsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, user, db):
         super().__init__(); self.user = user; self.db = db; self.logout_triggered = False
-        uic.loadUi("main_window.ui", self); self.statusbar.showMessage(f"Logged in as: {self.user[1]}")
+        uic.loadUi(resource_path("main_window.ui"), self); self.statusbar.showMessage(f"Logged in as: {self.user[1]}")
         self.tab_widget = self.findChild(QTabWidget, "tabWidget")
-        self.receive_tab_widget = QWidget(); uic.loadUi("receive_tab.ui", self.receive_tab_widget); self.tab_widget.addTab(self.receive_tab_widget, "Receive Asset")
-        self.active_tab_widget = QWidget(); uic.loadUi("active_tab.ui", self.active_tab_widget); self.tab_widget.addTab(self.active_tab_widget, "Active Assets")
-        self.dispatched_tab_widget = QWidget(); uic.loadUi("dispatched_tab.ui", self.dispatched_tab_widget); self.tab_widget.addTab(self.dispatched_tab_widget, "Dispatched Assets")
+        self.receive_tab_widget = QWidget(); uic.loadUi(resource_path("receive_tab.ui"), self.receive_tab_widget); self.tab_widget.addTab(self.receive_tab_widget, "Receive Asset")
+        self.active_tab_widget = QWidget(); uic.loadUi(resource_path("active_tab.ui"), self.active_tab_widget); self.tab_widget.addTab(self.active_tab_widget, "Active Assets")
+        self.dispatched_tab_widget = QWidget(); uic.loadUi(resource_path("dispatched_tab.ui"), self.dispatched_tab_widget); self.tab_widget.addTab(self.dispatched_tab_widget, "Dispatched Assets")
         
         self.active_searchCategoryComboBox = self.active_tab_widget.findChild(QComboBox, "searchCategoryComboBox"); self.active_searchCategoryComboBox.addItems(["Tracking ID", "Asset Name", "Asset Code", "Branch Name", "Date Received"])
         self.active_searchInput = self.active_tab_widget.findChild(QLineEdit, "searchInput"); self.active_searchDateEdit = self.active_tab_widget.findChild(QDateEdit, "searchDateEdit"); self.active_searchDateEdit.setVisible(False)
@@ -361,7 +373,8 @@ class MainWindow(QMainWindow):
         self.serialNumberInput = self.receive_tab_widget.findChild(QLineEdit, "serialNumberInput"); self.saveButton = self.receive_tab_widget.findChild(QPushButton, "saveButton")
         
         self.dateEdit.setDate(QDate.currentDate()); self.setup_connections(); self.refresh_active_products(); self.refresh_dispatched_products()
-        if os.path.exists("logic_league_logo.ico"): self.setWindowIcon(QIcon("logic_league_logo.ico"))
+        icon_path = resource_path("logic_league_logo.ico")
+        if os.path.exists(icon_path): self.setWindowIcon(QIcon(icon_path))
         
     def setup_connections(self):
         self.actionEdit_Profile.triggered.connect(self.open_profile_editor); self.actionLogout.triggered.connect(self.logout); self.actionExit.triggered.connect(self.close)
@@ -451,7 +464,7 @@ if __name__ == '__main__':
     check_for_updates()
     
     try:
-        with open("style.qss", "r") as f: app.setStyleSheet(f.read())
+        with open(resource_path("style.qss"), "r") as f: app.setStyleSheet(f.read())
     except FileNotFoundError: print("Warning: style.qss not found.")
     
     db = Database() # Connects to the central MySQL server
