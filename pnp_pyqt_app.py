@@ -1,7 +1,10 @@
-# pnp_pyqt_app.py (Final Version with Edit Functionality)
+# pnp_pyqt_app.py (Final Networked Version with Direct Private Repo Updater)
 import sys
 import os
-import sqlite3
+import mysql.connector
+import configparser
+import requests
+import webbrowser
 import datetime
 import random
 import string
@@ -13,176 +16,194 @@ from PyQt6.QtGui import QPainter, QPixmap, QPen, QImage, QIcon
 from PyQt6.QtCore import Qt, QPoint, QDate
 from PyQt6 import uic
 
-# --- Database Class (With Dispatch and Update Methods) ---
+# --- APPLICATION VERSION ---
+# Update this when you create a new release on GitHub
+APP_VERSION = "1.2.0" 
+
+# --- GitHub Update Checker (Direct connection to Private Repo) ---
+def check_for_updates():
+    try:
+        config = configparser.ConfigParser()
+        config.read('config.ini')
+        
+        # Check if the github section and keys exist
+        if not config.has_section('github') or not config.has_option('github', 'repository') or not config.has_option('github', 'token'):
+            print("Warning: [github] section with repository and token not found in config.ini. Skipping update check.")
+            return
+
+        repo_name = config['github']['repository']
+        github_token = config['github']['token']
+
+        if not repo_name or not github_token:
+            print("Warning: GitHub repository or token is empty in config.ini. Skipping update check.")
+            return
+
+        api_url = f"https://api.github.com/repos/{repo_name}/releases/latest"
+        
+        # The headers are crucial for authenticating with a private repository
+        headers = {
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        response = requests.get(api_url, headers=headers, timeout=5)
+        response.raise_for_status() # Will raise an error for 4xx/5xx responses (e.g., bad token)
+        
+        latest_release = response.json()
+        latest_version = latest_release.get("tag_name", "0.0.0").lstrip('v')
+        download_url = latest_release.get("html_url")
+
+        if latest_version and download_url and latest_version > APP_VERSION:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(f"A new version ({latest_version}) is available!")
+            msg.setInformativeText("Would you like to go to the download page?")
+            msg.setWindowTitle("Update Available")
+            msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            
+            if msg.exec() == QMessageBox.StandardButton.Yes:
+                webbrowser.open(download_url)
+
+    except configparser.NoSectionError:
+        print("Update check skipped: No [github] section in config.ini.")
+    except Exception as e:
+        # This will catch network errors, authentication errors, config errors, etc.
+        print(f"Could not check for updates: {e}")
+
+
+# --- Database Class (Connects to MySQL Server) ---
 class Database:
-    def __init__(self, db_file="inventory.db"):
-        self.conn = sqlite3.connect(db_file)
-        self.cursor = self.conn.cursor()
-        self.create_tables()
+    def __init__(self):
+        self.conn = None
+        self.cursor = None
+        try:
+            config = configparser.ConfigParser()
+            config.read('config.ini')
+            db_config = config['database']
+            
+            self.conn = mysql.connector.connect(**db_config)
+            self.cursor = self.conn.cursor(buffered=True) 
+            self.create_tables()
+        except Exception as e:
+            QMessageBox.critical(None, "Database Connection Error", 
+                                 f"Could not connect to the database server.\n"
+                                 f"Check your network and config.ini settings.\n\nError: {e}")
+            sys.exit(1)
 
     def hash_password(self, password):
         return hashlib.sha256(password.encode()).hexdigest()
 
     def create_tables(self):
-        # Create users table
-        self.cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT, signature_path TEXT)")
-        
-        # Create products table with all required columns
         self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY, 
-            tracking_id TEXT UNIQUE, 
-            asset_name TEXT, 
-            asset_code TEXT,
-            serial_number TEXT, 
-            branch_name TEXT, 
-            date_received TEXT, 
-            current_status TEXT, 
-            date_dispatched TEXT, 
-            received_by_user_id INTEGER, 
-            received_by_signature_path TEXT, 
-            dispatched_by_user_id INTEGER, 
-            dispatched_by_signature_path TEXT
-        )""")
+        CREATE TABLE IF NOT EXISTS `users` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY, `username` VARCHAR(255) UNIQUE, 
+            `password_hash` VARCHAR(255), `signature_path` VARCHAR(255)
+        ) ENGINE=InnoDB;""")
         
-        self.check_and_update_schema()
-        self.conn.commit()
-
-    def check_and_update_schema(self):
-        self.cursor.execute("PRAGMA table_info(products)")
-        columns = [column[1] for column in self.cursor.fetchall()]
-        
-        required_columns = ["date_dispatched", "dispatched_by_user_id", "dispatched_by_signature_path"]
-        
-        for column in required_columns:
-            if column not in columns:
-                if column == "date_dispatched": self.cursor.execute(f"ALTER TABLE products ADD COLUMN {column} TEXT")
-                elif column.endswith("_id"): self.cursor.execute(f"ALTER TABLE products ADD COLUMN {column} INTEGER")
-                else: self.cursor.execute(f"ALTER TABLE products ADD COLUMN {column} TEXT")
-        
+        self.cursor.execute("""
+        CREATE TABLE IF NOT EXISTS `products` (
+            `id` INT AUTO_INCREMENT PRIMARY KEY, `tracking_id` VARCHAR(255) UNIQUE, 
+            `asset_name` VARCHAR(255), `asset_code` VARCHAR(255), `serial_number` VARCHAR(255), 
+            `branch_name` VARCHAR(255), `date_received` VARCHAR(255), `current_status` VARCHAR(255), 
+            `date_dispatched` VARCHAR(255), `received_by_user_id` INT, `received_by_signature_path` VARCHAR(255), 
+            `dispatched_by_user_id` INT, `dispatched_by_signature_path` VARCHAR(255)
+        ) ENGINE=InnoDB;""")
         self.conn.commit()
 
     def delete_product(self, tracking_id):
-        """Delete a product from the database by tracking ID."""
-        self.cursor.execute("DELETE FROM products WHERE tracking_id = ?", (tracking_id,))
-        self.conn.commit()
-        return "Product deleted successfully.", True
+        self.cursor.execute("DELETE FROM products WHERE tracking_id = %s", (tracking_id,))
+        self.conn.commit(); return "Product deleted successfully.", True
 
     def create_user(self, username, password, signature_path):
-        if not all([username, password, signature_path]): return "All fields including signature are required.", False
-        if self.cursor.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone(): return "Username already exists.", False
-        self.cursor.execute("INSERT INTO users (username, password_hash, signature_path) VALUES (?, ?, ?)",
+        if not all([username, password, signature_path]): return "All fields are required.", False
+        self.cursor.execute("SELECT id FROM users WHERE username = %s", (username,))
+        if self.cursor.fetchone(): return "Username already exists.", False
+        self.cursor.execute("INSERT INTO users (username, password_hash, signature_path) VALUES (%s, %s, %s)",
                             (username, self.hash_password(password), signature_path))
-        self.conn.commit()
-        return "User created successfully.", True
+        self.conn.commit(); return "User created successfully.", True
 
     def check_user(self, username, password):
-        user = self.cursor.execute("SELECT id, password_hash FROM users WHERE username = ?", (username,)).fetchone()
+        self.cursor.execute("SELECT id, password_hash FROM users WHERE username = %s", (username,))
+        user = self.cursor.fetchone()
         if user and user[1] == self.hash_password(password): return user[0], username
         return None, None
     
     def get_user_details(self, user_id):
         if not user_id: return ("Unknown", None)
-        result = self.cursor.execute("SELECT username, signature_path FROM users WHERE id = ?", (user_id,)).fetchone()
-        return result if result else ("Deleted/Invalid User", None)
+        self.cursor.execute("SELECT username, signature_path FROM users WHERE id = %s", (user_id,))
+        return self.cursor.fetchone() or ("Deleted/Invalid User", None)
 
     def update_user_profile(self, user_id, new_username, new_password_hash, new_signature_path):
         if new_username:
-            if self.cursor.execute("SELECT id FROM users WHERE username = ? AND id != ?", (new_username, user_id)).fetchone(): return "Username is already taken.", False
+            self.cursor.execute("SELECT id FROM users WHERE username = %s AND id != %s", (new_username, user_id))
+            if self.cursor.fetchone(): return "Username is already taken.", False
         updates, params = [], []
-        if new_username: updates.append("username = ?"); params.append(new_username)
-        if new_password_hash: updates.append("password_hash = ?"); params.append(new_password_hash)
-        if new_signature_path: updates.append("signature_path = ?"); params.append(new_signature_path)
+        if new_username: updates.append("username = %s"); params.append(new_username)
+        if new_password_hash: updates.append("password_hash = %s"); params.append(new_password_hash)
+        if new_signature_path: updates.append("signature_path = %s"); params.append(new_signature_path)
         if not updates: return "No changes provided.", False
         params.append(user_id)
-        self.cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", tuple(params))
-        self.conn.commit()
-        return "Profile updated.", True
+        self.cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", tuple(params))
+        self.conn.commit(); return "Profile updated.", True
 
     def get_user_signature_path(self, user_id):
-        result = self.cursor.execute("SELECT signature_path FROM users WHERE id = ?", (user_id,)).fetchone()
-        return result[0] if result else None
+        self.cursor.execute("SELECT signature_path FROM users WHERE id = %s", (user_id,))
+        result = self.cursor.fetchone(); return result[0] if result else None
         
     def generate_tracking_id(self):
         while True:
             tracking_id = 'PNP-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            if self.cursor.execute("SELECT 1 FROM products WHERE tracking_id = ?", (tracking_id,)).fetchone() is None: return tracking_id
+            self.cursor.execute("SELECT 1 FROM products WHERE tracking_id = %s", (tracking_id,))
+            if self.cursor.fetchone() is None: return tracking_id
 
     def add_product(self, data, user_id, signature_path):
         tracking_id = self.generate_tracking_id()
-        sql = "INSERT INTO products (tracking_id, asset_name, asset_code, serial_number, branch_name, date_received, current_status, received_by_user_id, received_by_signature_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        sql = "INSERT INTO products (tracking_id, asset_name, asset_code, serial_number, branch_name, date_received, current_status, received_by_user_id, received_by_signature_path) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
         self.cursor.execute(sql, (tracking_id, data['asset_name'], data['asset_code'], data['serial_number'], data['branch_name'], data['date'], "Received at HQ", user_id, signature_path))
-        self.conn.commit()
-        return tracking_id
+        self.conn.commit(); return tracking_id
 
-    # --- NEW METHOD to update a product's details ---
     def update_product(self, tracking_id, data):
-        sql = """UPDATE products SET 
-                    asset_name = ?, 
-                    asset_code = ?, 
-                    branch_name = ?, 
-                    serial_number = ? 
-                 WHERE tracking_id = ?"""
-        try:
-            self.cursor.execute(sql, (
-                data['asset_name'],
-                data['asset_code'],
-                data['branch_name'],
-                data['serial_number'],
-                tracking_id
-            ))
-            self.conn.commit()
-            return "Product updated successfully.", True
-        except Exception as e:
-            return f"Failed to update product: {e}", False
+        sql = "UPDATE products SET asset_name = %s, asset_code = %s, branch_name = %s, serial_number = %s WHERE tracking_id = %s"
+        self.cursor.execute(sql, (data['asset_name'], data['asset_code'], data['branch_name'], data['serial_number'], tracking_id))
+        self.conn.commit(); return "Product updated successfully.", True
 
     def dispatch_product(self, product_id, dispatcher_id):
         dispatcher_signature_path = self.get_user_signature_path(dispatcher_id)
         if not dispatcher_signature_path: return "Dispatcher signature not found.", False
         date_dispatched = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_status = "Dispatched to Branch"
-        sql = "UPDATE products SET current_status=?, date_dispatched=?, dispatched_by_user_id=?, dispatched_by_signature_path=? WHERE id = ?"
-        self.cursor.execute(sql, (new_status, date_dispatched, dispatcher_id, dispatcher_signature_path, product_id))
-        self.conn.commit()
-        return "Asset dispatched successfully.", True
+        sql = "UPDATE products SET current_status=%s, date_dispatched=%s, dispatched_by_user_id=%s, dispatched_by_signature_path=%s WHERE id = %s"
+        self.cursor.execute(sql, ("Dispatched to Branch", date_dispatched, dispatcher_id, dispatcher_signature_path, product_id))
+        self.conn.commit(); return "Asset dispatched successfully.", True
 
     def get_all_active_products(self):
         sql = """SELECT p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, p.date_received, u.username
-                 FROM products p JOIN users u ON p.received_by_user_id = u.id 
-                 WHERE p.dispatched_by_user_id IS NULL ORDER BY p.date_received DESC"""
-        return self.cursor.execute(sql).fetchall()
+                 FROM products p JOIN users u ON p.received_by_user_id = u.id WHERE p.dispatched_by_user_id IS NULL ORDER BY p.date_received DESC"""
+        self.cursor.execute(sql); return self.cursor.fetchall()
     
     def get_all_dispatched_products(self):
-        sql = """SELECT p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, 
-                        p.date_received, p.date_dispatched, u1.username as received_by, u2.username as dispatched_by
-                 FROM products p 
-                 JOIN users u1 ON p.received_by_user_id = u1.id 
-                 LEFT JOIN users u2 ON p.dispatched_by_user_id = u2.id 
-                 WHERE p.dispatched_by_user_id IS NOT NULL 
-                 ORDER BY p.date_dispatched DESC"""
-        return self.cursor.execute(sql).fetchall()
+        sql = """SELECT p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, p.date_received, p.date_dispatched, u1.username as received_by, u2.username as dispatched_by
+                 FROM products p JOIN users u1 ON p.received_by_user_id = u1.id LEFT JOIN users u2 ON p.dispatched_by_user_id = u2.id 
+                 WHERE p.dispatched_by_user_id IS NOT NULL ORDER BY p.date_dispatched DESC"""
+        self.cursor.execute(sql); return self.cursor.fetchall()
     
     def search_products(self, term, category, dispatched=False):
-        column_map = {"Tracking ID": "p.tracking_id", "Asset Name": "p.asset_name", "Asset Code": "p.asset_code", 
-                      "Branch Name": "p.branch_name", "Date Received": "p.date_received", "Date Dispatched": "p.date_dispatched"}
+        column_map = {"Tracking ID": "p.tracking_id", "Asset Name": "p.asset_name", "Asset Code": "p.asset_code", "Branch Name": "p.branch_name", "Date Received": "p.date_received", "Date Dispatched": "p.date_dispatched"}
         db_column = column_map.get(category)
         if not db_column: return []
-        search_term = f"%{term}%" if category not in ["Date Received", "Date Dispatched"] else term
+        search_term = f"%{term}%" if "Date" not in category else term
+        base_sql = "FROM products p JOIN users u1 ON p.received_by_user_id = u1.id LEFT JOIN users u2 ON p.dispatched_by_user_id = u2.id"
         if dispatched:
-            sql = f"""SELECT p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, 
-                             p.date_received, p.date_dispatched, u1.username as received_by, u2.username as dispatched_by
-                      FROM products p JOIN users u1 ON p.received_by_user_id = u1.id LEFT JOIN users u2 ON p.dispatched_by_user_id = u2.id 
-                      WHERE {db_column} LIKE ? AND p.dispatched_by_user_id IS NOT NULL ORDER BY p.date_dispatched DESC"""
+            cols = "p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, p.date_received, p.date_dispatched, u1.username, u2.username"
+            sql = f"SELECT {cols} {base_sql} WHERE {db_column} LIKE %s AND p.dispatched_by_user_id IS NOT NULL ORDER BY p.date_dispatched DESC"
         else:
-            sql = f"""SELECT p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, p.date_received, u.username
-                      FROM products p JOIN users u ON p.received_by_user_id = u.id 
-                      WHERE {db_column} LIKE ? AND p.dispatched_by_user_id IS NULL ORDER BY p.date_received DESC"""
-        return self.cursor.execute(sql, (search_term,)).fetchall()
+            cols = "p.tracking_id, p.asset_name, p.asset_code, p.branch_name, p.current_status, p.date_received, u1.username"
+            sql = f"SELECT {cols} {base_sql} WHERE {db_column} LIKE %s AND p.dispatched_by_user_id IS NULL ORDER BY p.date_received DESC"
+        self.cursor.execute(sql, (search_term,)); return self.cursor.fetchall()
 
     def get_product_details(self, tracking_id):
-        return self.cursor.execute("SELECT * FROM products WHERE tracking_id = ?", (tracking_id,)).fetchone()
+        self.cursor.execute("SELECT * FROM products WHERE tracking_id = %s", (tracking_id,)); return self.cursor.fetchone()
 
-# --- Reusable Signature Pad Widget ---
+# --- The rest of your UI code (SignaturePad, Dialogs, MainWindow) is unchanged ---
 class SignaturePad(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent); self.setFixedSize(400, 150)
@@ -206,7 +227,6 @@ class SignaturePad(QWidget):
                 if img.pixel(x, y) != 0xFFFFFFFF: return True
         return False
 
-# --- Dialog Windows ---
 class LoginDialog(QDialog):
     def __init__(self, db, parent=None):
         super().__init__(parent); self.db = db; self.setWindowTitle("User Login")
@@ -277,110 +297,66 @@ class ProfileEditorDialog(QDialog):
         if success: QMessageBox.information(self, "Success", message); super().accept()
         else: QMessageBox.warning(self, "Update Failed", message)
 
-# --- NEW DIALOG for editing products ---
 class EditProductDialog(QDialog):
     def __init__(self, product_details, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.setWindowTitle("Edit Product")
-        
+        super().__init__(parent); self.db = db; self.setWindowTitle("Edit Product")
         self.tracking_id = product_details[1]
         self.asset_name_input = QLineEdit(product_details[2])
         self.asset_code_input = QLineEdit(product_details[3])
         self.serial_number_input = QLineEdit(product_details[4])
         self.branch_name_input = QLineEdit(product_details[5])
-        
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        
-        layout = QFormLayout()
-        layout.addRow("Tracking ID:", QLabel(self.tracking_id))
-        layout.addRow("Asset Name:", self.asset_name_input)
-        layout.addRow("Asset Code:", self.asset_code_input)
-        layout.addRow("Branch Name:", self.branch_name_input)
-        layout.addRow("Serial Number:", self.serial_number_input)
-        layout.addWidget(buttons)
-        
+        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
+        layout = QFormLayout(); layout.addRow("Tracking ID:", QLabel(self.tracking_id)); layout.addRow("Asset Name:", self.asset_name_input)
+        layout.addRow("Asset Code:", self.asset_code_input); layout.addRow("Branch Name:", self.branch_name_input)
+        layout.addRow("Serial Number:", self.serial_number_input); layout.addWidget(buttons)
         self.setLayout(layout)
-        
     def accept(self):
-        updated_data = {
-            "asset_name": self.asset_name_input.text().strip(),
-            "asset_code": self.asset_code_input.text().strip(),
-            "branch_name": self.branch_name_input.text().strip(),
-            "serial_number": self.serial_number_input.text().strip()
-        }
-        
-        if not all(updated_data.values()):
-            QMessageBox.warning(self, "Input Error", "All fields are required.")
-            return
-        
+        updated_data = {"asset_name": self.asset_name_input.text().strip(), "asset_code": self.asset_code_input.text().strip(),
+                        "branch_name": self.branch_name_input.text().strip(), "serial_number": self.serial_number_input.text().strip()}
+        if not all(updated_data.values()): QMessageBox.warning(self, "Input Error", "All fields are required."); return
         message, success = self.db.update_product(self.tracking_id, updated_data)
-        if success:
-            QMessageBox.information(self, "Success", message)
-            super().accept()
-        else:
-            QMessageBox.warning(self, "Error", message)
+        if success: QMessageBox.information(self, "Success", message); super().accept()
+        else: QMessageBox.warning(self, "Error", message)
 
 class ProductDetailsDialog(QDialog):
     def __init__(self, tracking_id, db, parent=None):
         super().__init__(parent); self.parent = parent; self.setWindowTitle(f"Details for {tracking_id}"); self.db = db
-        self.product_data = self.db.get_product_details(tracking_id)
-        layout = QVBoxLayout()
+        self.product_data = self.db.get_product_details(tracking_id); layout = QVBoxLayout()
         if not self.product_data: layout.addWidget(QLabel("Product not found.")); self.setLayout(layout); return
-        self.product_id = self.product_data[0]
-        form_layout = QFormLayout()
-        details_map = {"Tracking ID": self.product_data[1], "Asset Name": self.product_data[2], "Asset Code": self.product_data[3], "Serial Number": self.product_data[4],
-                       "Branch Name": self.product_data[5], "Date Received": self.product_data[6], "Current Status": self.product_data[7]}
+        self.product_id = self.product_data[0]; form_layout = QFormLayout()
+        details_map = {"Tracking ID": self.product_data[1], "Asset Name": self.product_data[2], "Asset Code": self.product_data[3], "Serial Number": self.product_data[4], "Branch Name": self.product_data[5], "Date Received": self.product_data[6], "Current Status": self.product_data[7]}
         for label, value in details_map.items(): form_layout.addRow(QLabel(f"<b>{label}:</b>"), QLabel(str(value or "N/A")))
         reception_user_details = self.db.get_user_details(self.product_data[9]); reception_user = reception_user_details[0] if reception_user_details else "Unknown"
         form_layout.addRow(QLabel(f"<b>Received By:</b>"), QLabel(reception_user)); layout.addLayout(form_layout)
-        signature_path = self.product_data[10]
-        if signature_path and os.path.exists(signature_path):
+        if (signature_path := self.product_data[10]) and os.path.exists(signature_path):
             sig_image_label = QLabel(); pixmap = QPixmap(signature_path)
             sig_image_label.setPixmap(pixmap.scaled(400, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             layout.addWidget(QLabel("<b>Reception Signature:</b>")); layout.addWidget(sig_image_label)
         layout.addWidget(QLabel("<hr>"))
-        dispatched_user_id = self.product_data[11]
-        if dispatched_user_id:
-            dispatch_form_layout = QFormLayout()
-            dispatch_user_details = self.db.get_user_details(dispatched_user_id); dispatch_user = dispatch_user_details[0] if dispatch_user_details else "Unknown"
+        if dispatched_user_id := self.product_data[11]:
+            dispatch_form_layout = QFormLayout(); dispatch_user_details = self.db.get_user_details(dispatched_user_id)
+            dispatch_user = dispatch_user_details[0] if dispatch_user_details else "Unknown"
             dispatch_form_layout.addRow(QLabel("<b>Date Dispatched:</b>"), QLabel(self.product_data[8] or "N/A"))
             dispatch_form_layout.addRow(QLabel("<b>Dispatched By:</b>"), QLabel(dispatch_user)); layout.addLayout(dispatch_form_layout)
-            dispatch_sig_path = self.product_data[12]
-            if dispatch_sig_path and os.path.exists(dispatch_sig_path):
+            if (dispatch_sig_path := self.product_data[12]) and os.path.exists(dispatch_sig_path):
                 dispatch_sig_image = QLabel(); pixmap = QPixmap(dispatch_sig_path)
                 dispatch_sig_image.setPixmap(pixmap.scaled(400, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
                 layout.addWidget(QLabel("<b>Dispatch Signature:</b>")); layout.addWidget(dispatch_sig_image)
         else:
-            button_layout = QHBoxLayout()
-            self.edit_button = QPushButton("Edit Details")
-            self.edit_button.clicked.connect(self.handle_edit)
-            button_layout.addWidget(self.edit_button)
-            self.dispatch_button = QPushButton("Dispatch This Asset")
-            self.dispatch_button.clicked.connect(self.handle_dispatch)
-            button_layout.addWidget(self.dispatch_button)
-            layout.addLayout(button_layout)
+            button_layout = QHBoxLayout(); self.edit_button = QPushButton("Edit Details"); self.edit_button.clicked.connect(self.handle_edit)
+            button_layout.addWidget(self.edit_button); self.dispatch_button = QPushButton("Dispatch This Asset")
+            self.dispatch_button.clicked.connect(self.handle_dispatch); button_layout.addWidget(self.dispatch_button); layout.addLayout(button_layout)
         self.setLayout(layout)
-
     def handle_edit(self):
-        edit_dialog = EditProductDialog(self.product_data, self.db, self)
-        if edit_dialog.exec() == QDialog.DialogCode.Accepted:
-            self.parent.refresh_active_products()
-            self.accept()
-
+        if (edit_dialog := EditProductDialog(self.product_data, self.db, self)).exec() == QDialog.DialogCode.Accepted:
+            self.parent.refresh_active_products(); self.accept()
     def handle_dispatch(self):
-        reply = QMessageBox.question(self, 'Confirm Dispatch', "Are you sure you want to dispatch this asset?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            current_user_id = self.parent.user[0]
-            message, success = self.db.dispatch_product(self.product_id, current_user_id)
-            if success:
-                QMessageBox.information(self, "Success", message)
-                self.parent.refresh_active_products(); self.parent.refresh_dispatched_products(); self.accept()
+        if QMessageBox.question(self, 'Confirm Dispatch', "Are you sure?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+            message, success = self.db.dispatch_product(self.product_id, self.parent.user[0])
+            if success: QMessageBox.information(self, "Success", message); self.parent.refresh_active_products(); self.parent.refresh_dispatched_products(); self.accept()
             else: QMessageBox.critical(self, "Error", message)
 
-# --- Main Application Window ---
 class MainWindow(QMainWindow):
     def __init__(self, user, db):
         super().__init__(); self.user = user; self.db = db; self.logout_triggered = False
@@ -390,14 +366,12 @@ class MainWindow(QMainWindow):
         self.active_tab_widget = QWidget(); uic.loadUi("active_tab.ui", self.active_tab_widget); self.tab_widget.addTab(self.active_tab_widget, "Active Assets")
         self.dispatched_tab_widget = QWidget(); uic.loadUi("dispatched_tab.ui", self.dispatched_tab_widget); self.tab_widget.addTab(self.dispatched_tab_widget, "Dispatched Assets")
         
-        self.active_search_categories = ["Tracking ID", "Asset Name", "Asset Code", "Branch Name", "Date Received"]
-        self.active_searchCategoryComboBox = self.active_tab_widget.findChild(QComboBox, "searchCategoryComboBox"); self.active_searchCategoryComboBox.addItems(self.active_search_categories)
+        self.active_searchCategoryComboBox = self.active_tab_widget.findChild(QComboBox, "searchCategoryComboBox"); self.active_searchCategoryComboBox.addItems(["Tracking ID", "Asset Name", "Asset Code", "Branch Name", "Date Received"])
         self.active_searchInput = self.active_tab_widget.findChild(QLineEdit, "searchInput"); self.active_searchDateEdit = self.active_tab_widget.findChild(QDateEdit, "searchDateEdit"); self.active_searchDateEdit.setVisible(False)
         self.active_searchButton = self.active_tab_widget.findChild(QPushButton, "searchButton"); self.active_refreshButton = self.active_tab_widget.findChild(QPushButton, "refreshButton")
         self.active_productTable = self.active_tab_widget.findChild(QTableWidget, "productTable")
         
-        self.dispatched_search_categories = ["Tracking ID", "Asset Name", "Asset Code", "Branch Name", "Date Received", "Date Dispatched"]
-        self.dispatched_searchCategoryComboBox = self.dispatched_tab_widget.findChild(QComboBox, "searchCategoryComboBox"); self.dispatched_searchCategoryComboBox.addItems(self.dispatched_search_categories)
+        self.dispatched_searchCategoryComboBox = self.dispatched_tab_widget.findChild(QComboBox, "searchCategoryComboBox"); self.dispatched_searchCategoryComboBox.addItems(["Tracking ID", "Asset Name", "Asset Code", "Branch Name", "Date Received", "Date Dispatched"])
         self.dispatched_searchInput = self.dispatched_tab_widget.findChild(QLineEdit, "searchInput"); self.dispatched_searchDateEdit = self.dispatched_tab_widget.findChild(QDateEdit, "searchDateEdit"); self.dispatched_searchDateEdit.setVisible(False)
         self.dispatched_searchButton = self.dispatched_tab_widget.findChild(QPushButton, "searchButton"); self.dispatched_refreshButton = self.dispatched_tab_widget.findChild(QPushButton, "refreshButton")
         self.dispatched_productTable = self.dispatched_tab_widget.findChild(QTableWidget, "productTable")
@@ -406,10 +380,8 @@ class MainWindow(QMainWindow):
         self.assetNameInput = self.receive_tab_widget.findChild(QLineEdit, "assetNameInput"); self.assetCodeInput = self.receive_tab_widget.findChild(QLineEdit, "assetCodeInput")
         self.serialNumberInput = self.receive_tab_widget.findChild(QLineEdit, "serialNumberInput"); self.saveButton = self.receive_tab_widget.findChild(QPushButton, "saveButton")
         
-        self.dateEdit.setDate(QDate.currentDate())
+        self.dateEdit.setDate(QDate.currentDate()); self.setup_connections(); self.refresh_active_products(); self.refresh_dispatched_products()
         if os.path.exists("logic_league_logo.ico"): self.setWindowIcon(QIcon("logic_league_logo.ico"))
-        self.setup_connections()
-        self.refresh_active_products(); self.refresh_dispatched_products()
         
     def setup_connections(self):
         self.actionEdit_Profile.triggered.connect(self.open_profile_editor); self.actionLogout.triggered.connect(self.logout); self.actionExit.triggered.connect(self.close)
@@ -426,15 +398,14 @@ class MainWindow(QMainWindow):
         self.dispatched_productTable.doubleClicked.connect(lambda: self.on_table_double_click(self.dispatched_productTable))
         
     def open_profile_editor(self):
-        ProfileEditorDialog(self.user[0], self.db, self).exec()
-        new_details = self.db.get_user_details(self.user[0]); self.user = (self.user[0], new_details[0])
-        self.statusbar.showMessage(f"Logged in as: {self.user[1]}")
+        if ProfileEditorDialog(self.user[0], self.db, self).exec():
+            new_details = self.db.get_user_details(self.user[0]); self.user = (self.user[0], new_details[0])
+            self.statusbar.showMessage(f"Logged in as: {self.user[1]}")
     
     def logout(self): self.logout_triggered = True; self.close()
     
     def on_search_category_changed(self, combo_box, date_edit, search_input):
-        category = combo_box.currentText()
-        date_edit.setVisible(category in ["Date Received", "Date Dispatched"]); search_input.setVisible(category not in ["Date Received", "Date Dispatched"])
+        category = combo_box.currentText(); date_edit.setVisible("Date" in category); search_input.setVisible("Date" not in category)
     
     def on_table_double_click(self, table):
         if (index := table.currentIndex()).isValid(): ProductDetailsDialog(table.item(index.row(), 0).text(), self.db, self).exec()
@@ -442,65 +413,23 @@ class MainWindow(QMainWindow):
     def refresh_active_products(self): self.active_searchInput.clear(); self.display_products(self.db.get_all_active_products(), self.active_productTable, False)
     def refresh_dispatched_products(self): self.dispatched_searchInput.clear(); self.display_products(self.db.get_all_dispatched_products(), self.dispatched_productTable, True)
     
-    def delete_active_product(self):
-        selected_row = self.active_productTable.currentRow()
-        if selected_row < 0:
-            QMessageBox.warning(self, "Error", "No product selected.")
-            return
-        tracking_id = self.active_productTable.item(selected_row, 0).text()
-        reply = QMessageBox.question(self, 'Confirm Deletion', f"Are you sure you want to delete the product with Tracking ID: {tracking_id}?", 
-                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
+    def delete_product(self, table, refresh_method):
+        if (selected_row := table.currentRow()) < 0: QMessageBox.warning(self, "Error", "No product selected."); return
+        tracking_id = table.item(selected_row, 0).text()
+        if QMessageBox.question(self, 'Confirm Deletion', f"Delete {tracking_id}?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             message, success = self.db.delete_product(tracking_id)
-            if success:
-                QMessageBox.information(self, "Success", message)
-                self.refresh_active_products()
-            else:
-                QMessageBox.critical(self, "Error", message)
+            QMessageBox.information(self, "Success" if success else "Error", message); refresh_method()
+    def delete_active_product(self): self.delete_product(self.active_productTable, self.refresh_active_products)
+    def delete_dispatched_product(self): self.delete_product(self.dispatched_productTable, self.refresh_dispatched_products)
 
-    def delete_dispatched_product(self):
-        selected_row = self.dispatched_productTable.currentRow()
-        if selected_row < 0:
-            QMessageBox.warning(self, "Error", "No product selected.")
-            return
-        tracking_id = self.dispatched_productTable.item(selected_row, 0).text()
-        reply = QMessageBox.question(self, 'Confirm Deletion', f"Are you sure you want to delete the product with Tracking ID: {tracking_id}?", 
-                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            message, success = self.db.delete_product(tracking_id)
-            if success:
-                QMessageBox.information(self, "Success", message)
-                self.refresh_dispatched_products()
-            else:
-                QMessageBox.critical(self, "Error", message)
-
-    def edit_active_product(self):
-        selected_row = self.active_productTable.currentRow()
-        if selected_row < 0:
-            QMessageBox.warning(self, "Error", "No product selected.")
-            return
-        tracking_id = self.active_productTable.item(selected_row, 0).text()
-        product_details = self.db.get_product_details(tracking_id)
-        if product_details:
-            edit_dialog = EditProductDialog(product_details, self.db, self)
-            if edit_dialog.exec() == QDialog.DialogCode.Accepted:
-                self.refresh_active_products()
-        else:
-            QMessageBox.warning(self, "Error", "Could not find product details.")
-
-    def edit_dispatched_product(self):
-        selected_row = self.dispatched_productTable.currentRow()
-        if selected_row < 0:
-            QMessageBox.warning(self, "Error", "No product selected.")
-            return
-        tracking_id = self.dispatched_productTable.item(selected_row, 0).text()
-        product_details = self.db.get_product_details(tracking_id)
-        if product_details:
-            edit_dialog = EditProductDialog(product_details, self.db, self)
-            if edit_dialog.exec() == QDialog.DialogCode.Accepted:
-                self.refresh_dispatched_products()
-        else:
-            QMessageBox.warning(self, "Error", "Could not find product details.")
+    def edit_product(self, table, refresh_method):
+        if (selected_row := table.currentRow()) < 0: QMessageBox.warning(self, "Error", "No product selected."); return
+        tracking_id = table.item(selected_row, 0).text()
+        if (product_details := self.db.get_product_details(tracking_id)):
+            if EditProductDialog(product_details, self.db, self).exec(): refresh_method()
+        else: QMessageBox.warning(self, "Error", "Could not find product details.")
+    def edit_active_product(self): self.edit_product(self.active_productTable, self.refresh_active_products)
+    def edit_dispatched_product(self): self.edit_product(self.dispatched_productTable, self.refresh_dispatched_products)
     
     def display_products(self, products, table, dispatched=False):
         table.setRowCount(0)
@@ -510,40 +439,39 @@ class MainWindow(QMainWindow):
         table.resizeColumnsToContents()
     
     def execute_active_search(self):
-        category = self.active_searchCategoryComboBox.currentText()
-        term = self.active_searchDateEdit.date().toString("yyyy-MM-dd") if category == "Date Received" else self.active_searchInput.text().strip()
+        category = self.active_searchCategoryComboBox.currentText(); term = self.active_searchDateEdit.date().toString("yyyy-MM-dd") if "Date" in category else self.active_searchInput.text().strip()
         if not term: QMessageBox.warning(self, "Search Error", "Please enter a search term."); return
-        results = self.db.search_products(term, category, False)
-        if not results: QMessageBox.information(self, "No Results", "No products found.")
-        self.display_products(results, self.active_productTable, False)
+        self.display_products(self.db.search_products(term, category, False), self.active_productTable, False)
     
     def execute_dispatched_search(self):
-        category = self.dispatched_searchCategoryComboBox.currentText()
-        term = self.dispatched_searchDateEdit.date().toString("yyyy-MM-dd") if category in ["Date Received", "Date Dispatched"] else self.dispatched_searchInput.text().strip()
+        category = self.dispatched_searchCategoryComboBox.currentText(); term = self.dispatched_searchDateEdit.date().toString("yyyy-MM-dd") if "Date" in category else self.dispatched_searchInput.text().strip()
         if not term: QMessageBox.warning(self, "Search Error", "Please enter a search term."); return
-        results = self.db.search_products(term, category, True)
-        if not results: QMessageBox.information(self, "No Results", "No products found.")
-        self.display_products(results, self.dispatched_productTable, True)
+        self.display_products(self.db.search_products(term, category, True), self.dispatched_productTable, True)
     
     def save_asset(self):
-        data = {"date": self.dateEdit.date().toString("yyyy-MM-dd"), "branch_name": self.branchNameInput.text().strip(), 
-                "asset_name": self.assetNameInput.text().strip(), "asset_code": self.assetCodeInput.text().strip(), "serial_number": self.serialNumberInput.text().strip()}
+        data = {"date": self.dateEdit.date().toString("yyyy-MM-dd"), "branch_name": self.branchNameInput.text().strip(), "asset_name": self.assetNameInput.text().strip(), "asset_code": self.assetCodeInput.text().strip(), "serial_number": self.serialNumberInput.text().strip()}
         if not all([data["branch_name"], data["asset_name"]]): QMessageBox.warning(self, "Input Error", "Branch Name and Asset Name are required."); return
-        user_signature_path = self.db.get_user_signature_path(self.user[0])
-        if not user_signature_path: QMessageBox.critical(self, "Error", "Could not find signature for the current user."); return
+        if not (user_signature_path := self.db.get_user_signature_path(self.user[0])): QMessageBox.critical(self, "Error", "Could not find signature."); return
         new_tracking_id = self.db.add_product(data, self.user[0], user_signature_path)
-        QMessageBox.information(self, "Success", f"Asset successfully saved.\nNew Tracking ID: {new_tracking_id}")
+        QMessageBox.information(self, "Success", f"Asset saved.\nTracking ID: {new_tracking_id}")
         self.clear_receive_form(); self.refresh_active_products()
     
-    def clear_receive_form(self):
-        self.branchNameInput.clear(); self.assetNameInput.clear(); self.assetCodeInput.clear(); self.serialNumberInput.clear()
+    def clear_receive_form(self): self.branchNameInput.clear(); self.assetNameInput.clear(); self.assetCodeInput.clear(); self.serialNumberInput.clear()
+
 
 if __name__ == '__main__':
     if not os.path.exists("signatures"): os.makedirs("signatures")
-    db = Database(); app = QApplication(sys.argv)
+    app = QApplication(sys.argv)
+    
+    # Check for updates directly at startup
+    check_for_updates()
+    
     try:
         with open("style.qss", "r") as f: app.setStyleSheet(f.read())
-    except FileNotFoundError: print("Warning: style.qss not found. Using default application style.")
+    except FileNotFoundError: print("Warning: style.qss not found.")
+    
+    db = Database() # Connects to the central MySQL server
+    
     while True:
         login_dialog = LoginDialog(db)
         if login_dialog.exec() == QDialog.DialogCode.Accepted:
