@@ -1,4 +1,4 @@
-# pnp_pyqt_app.py (Final Networked Version with Direct Private Repo Updater)
+# pnp_pyqt_app.py (Final Networked Version with Public Repo Updater)
 import sys
 import os
 import mysql.connector
@@ -20,34 +20,14 @@ from PyQt6 import uic
 # Update this when you create a new release on GitHub
 APP_VERSION = "1.2.0" 
 
-# --- GitHub Update Checker (Direct connection to Private Repo) ---
+# --- GitHub Update Checker (for Public Repo) ---
 def check_for_updates():
+    # This URL points directly to your public repository's API endpoint
+    repo_url = "https://api.github.com/repos/giftkanyetinashe/asset-tracker/releases/latest"
+    
     try:
-        config = configparser.ConfigParser()
-        config.read('config.ini')
-        
-        # Check if the github section and keys exist
-        if not config.has_section('github') or not config.has_option('github', 'repository') or not config.has_option('github', 'token'):
-            print("Warning: [github] section with repository and token not found in config.ini. Skipping update check.")
-            return
-
-        repo_name = config['github']['repository']
-        github_token = config['github']['token']
-
-        if not repo_name or not github_token:
-            print("Warning: GitHub repository or token is empty in config.ini. Skipping update check.")
-            return
-
-        api_url = f"https://api.github.com/repos/{repo_name}/releases/latest"
-        
-        # The headers are crucial for authenticating with a private repository
-        headers = {
-            "Authorization": f"Bearer {github_token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-
-        response = requests.get(api_url, headers=headers, timeout=5)
-        response.raise_for_status() # Will raise an error for 4xx/5xx responses (e.g., bad token)
+        response = requests.get(repo_url, timeout=5)
+        response.raise_for_status() # Will raise an error for 4xx/5xx responses
         
         latest_release = response.json()
         latest_version = latest_release.get("tag_name", "0.0.0").lstrip('v')
@@ -64,14 +44,13 @@ def check_for_updates():
             if msg.exec() == QMessageBox.StandardButton.Yes:
                 webbrowser.open(download_url)
 
-    except configparser.NoSectionError:
-        print("Update check skipped: No [github] section in config.ini.")
     except Exception as e:
-        # This will catch network errors, authentication errors, config errors, etc.
+        # This will catch network errors or if no releases are found
         print(f"Could not check for updates: {e}")
 
 
 # --- Database Class (Connects to MySQL Server) ---
+# [ This class remains unchanged. It is perfect. ]
 class Database:
     def __init__(self):
         self.conn = None
@@ -203,7 +182,8 @@ class Database:
     def get_product_details(self, tracking_id):
         self.cursor.execute("SELECT * FROM products WHERE tracking_id = %s", (tracking_id,)); return self.cursor.fetchone()
 
-# --- The rest of your UI code (SignaturePad, Dialogs, MainWindow) is unchanged ---
+
+# --- The rest of your UI code is unchanged and goes here ---
 class SignaturePad(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent); self.setFixedSize(400, 150)
@@ -441,12 +421,16 @@ class MainWindow(QMainWindow):
     def execute_active_search(self):
         category = self.active_searchCategoryComboBox.currentText(); term = self.active_searchDateEdit.date().toString("yyyy-MM-dd") if "Date" in category else self.active_searchInput.text().strip()
         if not term: QMessageBox.warning(self, "Search Error", "Please enter a search term."); return
-        self.display_products(self.db.search_products(term, category, False), self.active_productTable, False)
+        results = self.db.search_products(term, category, False)
+        if not results: QMessageBox.information(self, "No Results", "No products found.")
+        self.display_products(results, self.active_productTable, False)
     
     def execute_dispatched_search(self):
         category = self.dispatched_searchCategoryComboBox.currentText(); term = self.dispatched_searchDateEdit.date().toString("yyyy-MM-dd") if "Date" in category else self.dispatched_searchInput.text().strip()
         if not term: QMessageBox.warning(self, "Search Error", "Please enter a search term."); return
-        self.display_products(self.db.search_products(term, category, True), self.dispatched_productTable, True)
+        results = self.db.search_products(term, category, True)
+        if not results: QMessageBox.information(self, "No Results", "No products found.")
+        self.display_products(results, self.dispatched_productTable, True)
     
     def save_asset(self):
         data = {"date": self.dateEdit.date().toString("yyyy-MM-dd"), "branch_name": self.branchNameInput.text().strip(), "asset_name": self.assetNameInput.text().strip(), "asset_code": self.assetCodeInput.text().strip(), "serial_number": self.serialNumberInput.text().strip()}
